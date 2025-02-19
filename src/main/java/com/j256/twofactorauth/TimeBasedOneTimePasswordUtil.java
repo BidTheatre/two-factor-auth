@@ -1,5 +1,7 @@
 package com.j256.twofactorauth;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.Arrays;
@@ -472,11 +474,10 @@ public class TimeBasedOneTimePasswordUtil {
 	 *            The dimension of the image, width and height. Can be set to {@link #DEFAULT_QR_DIMENTION}.
 	 */
 	public static String qrImageUrl(String keyId, String secret, int numDigits, int imageDimension) {
-		StringBuilder sb = new StringBuilder(128);
-		sb.append("https://chart.googleapis.com/chart?chs=" + imageDimension + "x" + imageDimension + "&cht=qr&chl="
-				+ imageDimension + "x" + imageDimension + "&chld=M|0&cht=qr&chl=");
-		addOtpAuthPart(keyId, secret, sb, numDigits);
-		return sb.toString();
+		return "https://quickchart.io/chart?chs=" +
+        imageDimension + 'x' + imageDimension +
+        "&chld=M|0&cht=qr&chl=" +
+        urlEncodeSegmentOrQuery(generateOtpAuthUrl(keyId, secret, numDigits));
 	}
 
 	/**
@@ -505,20 +506,19 @@ public class TimeBasedOneTimePasswordUtil {
 	 * @param numDigits
 	 *            The number of digits" of the OTP.
 	 */
+
 	public static String generateOtpAuthUrl(String keyId, String secret, int numDigits) {
-		StringBuilder sb = new StringBuilder(128);
-		addOtpAuthPart(keyId, secret, sb, numDigits);
-		return sb.toString();
+		return "otpauth://totp/" +
+        urlEncodeSegmentOrQuery(keyId) +
+        "?secret=" +
+        urlEncodeSegmentOrQuery(secret) +
+        "&digits=" +
+        numDigits;
 	}
 
-	private static void addOtpAuthPart(String keyId, String secret, StringBuilder sb, int numDigits) {
-		sb.append("otpauth://totp/")
-				.append(keyId)
-				.append("%3Fsecret%3D")
-				.append(secret)
-				.append("%26digits%3D")
-				.append(numDigits);
-	}
+	private static String urlEncodeSegmentOrQuery(String raw) {
+    return URLEncoder.encode(raw, StandardCharsets.UTF_8).replace("+", "%20");
+  }
 
 	private static boolean validateCurrentNumber(byte[] key, int authNumber, long windowMillis, long timeMillis,
 			int timeStepSeconds, int numDigits) throws GeneralSecurityException {
