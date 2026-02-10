@@ -1,10 +1,25 @@
 package com.j256.twofactorauth;
 
+import com.google.zxing.BarcodeFormat;
+import com.google.zxing.MultiFormatWriter;
+import com.google.zxing.WriterException;
+import com.google.zxing.client.j2se.MatrixToImageWriter;
+import com.google.zxing.common.BitMatrix;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+import java.io.IOException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.attribute.PosixFilePermission;
+import java.security.MessageDigest;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.Arrays;
+import java.util.EnumSet;
 import java.util.Random;
 
 import javax.crypto.Mac;
@@ -42,6 +57,7 @@ import javax.crypto.spec.SecretKeySpec;
  * @author graywatson
  */
 public class TimeBasedOneTimePasswordUtil {
+	private static final Logger logger = LogManager.getLogger(TimeBasedOneTimePasswordUtil.class);
 
 	/** default time-step which is part of the spec, 30 seconds is default */
 	public static final int DEFAULT_TIME_STEP_SECONDS = 30;
@@ -49,6 +65,10 @@ public class TimeBasedOneTimePasswordUtil {
 	public static int DEFAULT_OTP_LENGTH = 6;
 	/** default hight/width of QR image */
 	public static int DEFAULT_QR_DIMENTION = 200;
+	/** default directory for QR image files */
+	public static final String DEFAULT_QR_CODE_DIR = "/asx-static/cdn/qr-codes/";
+	/** default URL base for QR image files */
+	public static final String DEFAULT_QR_CODE_URL_BASE = "https://cdn.bidtheatre.com/qr-codes/";
 	/** set to the number of digits to control 0 prefix, set to 0 for no prefix */
 	private static int MAX_NUM_DIGITS_OUTPUT = 100;
 
@@ -430,8 +450,8 @@ public class TimeBasedOneTimePasswordUtil {
 	}
 
 	/**
-	 * Return the QR image url thanks to Google. This can be shown to the user and scanned by the authenticator program
-	 * as an easy way to enter the secret.
+	 * Return the QR image URL. This can be shown to the user and scanned by the authenticator program as an easy way
+	 * to enter the secret.
 	 * 
 	 * @param keyId
 	 *            Name of the key that you want to show up in the users authentication application. Should already be
@@ -444,8 +464,8 @@ public class TimeBasedOneTimePasswordUtil {
 	}
 
 	/**
-	 * Return the QR image url thanks to Google. This can be shown to the user and scanned by the authenticator program
-	 * as an easy way to enter the secret.
+	 * Return the QR image URL. This can be shown to the user and scanned by the authenticator program as an easy way
+	 * to enter the secret.
 	 *
 	 * @param keyId
 	 *            Name of the key that you want to show up in the users authentication application. Should already be
@@ -460,8 +480,8 @@ public class TimeBasedOneTimePasswordUtil {
 	}
 
 	/**
-	 * Return the QR image url thanks to Google. This can be shown to the user and scanned by the authenticator program
-	 * as an easy way to enter the secret.
+	 * Return the QR image URL. This can be shown to the user and scanned by the authenticator program as an easy way
+	 * to enter the secret.
 	 * 
 	 * @param keyId
 	 *            Name of the key that you want to show up in the users authentication application. Should already be
@@ -474,10 +494,41 @@ public class TimeBasedOneTimePasswordUtil {
 	 *            The dimension of the image, width and height. Can be set to {@link #DEFAULT_QR_DIMENTION}.
 	 */
 	public static String qrImageUrl(String keyId, String secret, int numDigits, int imageDimension) {
-		return "https://quickchart.io/chart?chs=" +
-        imageDimension + 'x' + imageDimension +
-        "&chld=M|0&cht=qr&chl=" +
-        urlEncodeSegmentOrQuery(generateOtpAuthUrl(keyId, secret, numDigits));
+		String otpAuthUrl = generateOtpAuthUrl(keyId, secret, numDigits);
+		return qrImageUrlFromData(otpAuthUrl, imageDimension);
+	}
+
+	/**
+	 * Return the QR image URL for a provided URL. This can be shown to the user and scanned by the authenticator
+	 * program or any QR reader.
+	 *
+	 * @param url
+	 *            URL to embed in the QR code.
+	 */
+	public static String qrImageUrl(String url) {
+		return qrImageUrlFromData(url, DEFAULT_QR_DIMENTION);
+	}
+
+	private static String qrImageUrlFromData(String data, int imageDimension) {
+		String fileName = qrCodeFileName(data, imageDimension);
+		Path outputPath = qrCodeDirectory().resolve(fileName);
+
+		try {
+			if (Files.notExists(outputPath)) {
+				Files.createDirectories(outputPath.getParent());
+				BitMatrix matrix = new MultiFormatWriter().encode(data, BarcodeFormat.QR_CODE, imageDimension,
+						imageDimension);
+				MatrixToImageWriter.writeToPath(matrix, "PNG", outputPath);
+				applyFilePermissions(outputPath);
+				logger.info("Generated QR code image at {}", outputPath);
+			} else {
+				logger.info("QR code image already exists at {}", outputPath);
+			}
+		} catch (IOException | WriterException e) {
+			logger.error("Failed to generate QR code image at {}", outputPath, e);
+		}
+
+		return qrCodeUrlBase() + fileName;
 	}
 
 	/**
@@ -519,6 +570,53 @@ public class TimeBasedOneTimePasswordUtil {
 	private static String urlEncodeSegmentOrQuery(String raw) {
     return URLEncoder.encode(raw, StandardCharsets.UTF_8).replace("+", "%20");
   }
+
+	private static Path qrCodeDirectory() {
+		return Paths.get(DEFAULT_QR_CODE_DIR);
+	}
+
+	private static String qrCodeUrlBase() {
+		return DEFAULT_QR_CODE_URL_BASE;
+	}
+
+	private static String qrCodeFileName(String otpAuthUrl, int imageDimension) {
+		byte[] digest = sha256Digest(otpAuthUrl, imageDimension);
+		return toHex(digest);
+	}
+
+	private static byte[] sha256Digest(String otpAuthUrl, int imageDimension) {
+		try {
+			MessageDigest digest = MessageDigest.getInstance("SHA-256");
+			digest.update(otpAuthUrl.getBytes(StandardCharsets.UTF_8));
+			digest.update((byte) ':');
+			digest.update(Integer.toString(imageDimension).getBytes(StandardCharsets.UTF_8));
+			return digest.digest();
+		} catch (Exception e) {
+			return otpAuthUrl.getBytes(StandardCharsets.UTF_8);
+		}
+	}
+
+	private static String toHex(byte[] data) {
+		StringBuilder sb = new StringBuilder(data.length * 2);
+		for (byte value : data) {
+			int unsigned = value & 0xff;
+			if (unsigned < 16) {
+				sb.append('0');
+			}
+			sb.append(Integer.toHexString(unsigned));
+		}
+		return sb.toString();
+	}
+
+	private static void applyFilePermissions(Path outputPath) {
+		try {
+			Files.setPosixFilePermissions(outputPath,
+					EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+							PosixFilePermission.GROUP_READ, PosixFilePermission.OTHERS_READ));
+		} catch (UnsupportedOperationException | IOException e) {
+			logger.error("Skipping POSIX permissions for {}", outputPath, e);
+		}
+	}
 
 	private static boolean validateCurrentNumber(byte[] key, int authNumber, long windowMillis, long timeMillis,
 			int timeStepSeconds, int numDigits) throws GeneralSecurityException {
